@@ -138,7 +138,7 @@ def forward_kinematics_franka(joint_angles):
 
 
 def inverse_kinematics_franka(ee_T):
-    return np.array([0] * 6)
+    return np.array([0] * 7)
 
 
 class FKNode(Node):
