@@ -55,6 +55,58 @@ def rotation_matrix_z(theta):
             [0, 0, 1]
         ])]
 
+def rotation_matrix_to_axis_angle(R):
+    """
+    Convert a 3x3 rotation matrix to axis-angle representation
+    
+    Args:
+        R: 3x3 rotation matrix (numpy array)
+    
+    Returns:
+        (axis, angle) where:
+        - axis is a unit vector (numpy array)
+        - angle is in radians
+    """
+    # Ensure the matrix is a valid rotation matrix
+    assert R.shape == (3, 3), "Input must be a 3x3 matrix"
+    if not np.allclose(R @ R.T, np.eye(3), atol=1e-6):
+        raise ValueError("Matrix is not a valid rotation matrix")
+    
+    # TODO: Compute the rotation angle
+    angle = 0
+    
+    # Handle special cases
+    if abs(angle) < 1e-6:
+        # No rotation (identity matrix)
+        return np.array([1, 0, 0]), 0.0
+    elif abs(angle - math.pi) < 1e-6:
+        # 180 degree rotation - special handling needed
+        # Axis is the normalized vector from non-diagonal elements
+        axis = np.array([
+            math.sqrt((R[0, 0] + 1)/2),
+            math.sqrt((R[1, 1] + 1)/2),
+            math.sqrt((R[2, 2] + 1)/2)
+        ])
+        # Determine signs of axis components
+        if R[0, 2] - R[2, 0] < 0:
+            axis[1] = -axis[1]
+        if R[1, 0] - R[0, 1] < 0:
+            axis[2] = -axis[2]
+        if R[2, 1] - R[1, 2] < 0:
+            axis[0] = -axis[0]
+    else:
+        # General case
+        axis = np.array([
+            R[2, 1] - R[1, 2],
+            R[0, 2] - R[2, 0],
+            R[1, 0] - R[0, 1]
+        ]) / (2 * math.sin(angle))
+    
+    # Normalize the axis (should already be unit vector, but just in case)
+    axis = axis / np.linalg.norm(axis)
+    
+    return axis, angle
+
 def transformation_matrix(rotation_matrix, translation_vector):
     """
     Create a 4x4 homogeneous transformation matrix from a 3x3 rotation matrix and a 3x1 translation vector.
@@ -121,15 +173,6 @@ def forward_kinematics_franka(joint_angles):
     T67 = transformation_matrix(R67, p67)
     T78 = transformation_matrix(R78, p78)
     T8ee = transformation_matrix(R8ee, p8ee)
-
-    # print("T01:\n", T01)
-    # print("T12:\n", T12)
-    # print("T23:\n", T23)
-    # print("T34:\n", T34)
-    # print("T45:\n", T45)
-    # print("T56:\n", T56)
-    # print("T67:\n", T67)
-    # print("T78:\n", T78)
     
     # Compute the end-effector position
     ee_T = T01 @ T12 @ T23 @ T34 @ T45 @ T56 @ T67 @ T78 @ T8ee
@@ -137,38 +180,92 @@ def forward_kinematics_franka(joint_angles):
     return ee_T
 
 
-def inverse_kinematics_franka(ee_T):
-    return np.array([0] * 7)
+def error(current_T, ref_T):
+    """
+    Compute the difference between two homogeneous transformation matrices.
+    
+    Parameters:
+    current_T (np.array): 4 x 4 transformation matrix.
+    ref_T (np.array): 4 x 4 transformation matrix.
+    
+    Returns:
+    np.array: 6x1 error term, first three term for rotational error, last three term for translational error.
+    """
+    axis, angle = rotation_matrix_to_axis_angle(np.transpose(current_T[:3, :3])@ref_T[:3, :3])
+    rot_error = axis * angle
+    vec_error = current_T[:3, 3] - ref_T[:3, 3] 
+    return np.concatenate((rot_error, vec_error))
 
 
-class FKNode(Node):
+def jacobian_fd(angles):
+    """
+    Compute the Jacobian matrix numerically using finite difference
+    Parameters:
+    angles (list): joint angles
+    
+    Returns:
+    np.array: 6xlen(angles) jacobian matrix
+    """
+    n_joints = len(angles)
+    epsilon = 0.001
+    J = np.zeros((6, n_joints))
 
-    def __init__(self):
-        super().__init__('fk_calculation_node')
-        self.subscription = self.create_subscription(
-            JointState,
-            'joint_states',  # Replace with your topic name
-            self.listener_callback,
-            10)
-        self.subscription  # Prevent unused variable warning
+    # TODO: compute jacobian using finite difference. You only need to complete one jacobian function, either jacobian_fd or jacobian. 
 
-    def listener_callback(self, msg):
-        # get joint angles
-        joint_names = msg.name
-        print(joint_names)
-        joint_names_in_order = ["panda_joint1",
-                                "panda_joint2",
-                                "panda_joint3",
-                                "panda_joint4",
-                                "panda_joint5",
-                                "panda_joint6",
-                                "panda_joint7"]
-        indices = [joint_names.index(name) for name in joint_names_in_order]
-        joint_angles = [msg.position[i] for i in indices]
-        ee_T = forward_kinematics_franka(joint_angles)  # compute FK
-        ee_round = np.round(ee_T, 3)
-        self.get_logger().info(f'Joint Angles 1-7 : {joint_angles}')
-        self.get_logger().info(f'EE Transformation Matrix:: {ee_round}')
+    return J
+
+def jacobian(angles):
+    """
+    Compute the Jacobian matrix
+    Parameters:
+    angles (list): joint angles
+    
+    Returns:
+    np.array: 6xlen(angles) jacobian matrix
+    """
+    n_joints = len(angles)
+    J = np.zeros((6, n_joints))
+
+    # TODO: compute jacobian using the formula for rotational joints. You only need to complete one jacobian function, either jacobian_fd or jacobian. 
+
+    return J
+
+def shift_angle(angles):
+    # shift angles to between 0 and 2*pi
+    return np.mod(angles + np.pi, 2*np.pi) - np.pi
+
+def inverse_kinematics_franka(ref_T):
+    """
+    Compute IK using Gauss-Newton Algorithm
+    Parameters:
+    ref_T (np.array): 4 x 4 reference transformation matrix.
+    
+    Returns:
+    np.array: 7 x 1 joint angles
+    """
+
+    # IK Gauss-Newton Algorithm
+    angles = np.array([0.0] * 7)  # you can change this part to a random guess. 
+    max_iter = 100
+    tol = 0.01
+    
+    for iter in range(max_iter):
+        current_T = forward_kinematics_franka(angles)
+        # TODO: compute the error between the current transformation matrix and the ref_T.
+        cur_error = np.zeros((6, 1))
+
+        if np.linalg.norm(cur_error) < tol:
+            print(f"Converged after {iter} iterations")
+            return shift_angle(angles)
+        
+        J = jacobian_fd(angles)  # compute jacobian with jacobian_fd or jacobian depending on which one you choose to complete
+        
+        # TODO: Update joint angles
+        
+    
+    print("Warning: Did not converge to desired tolerance.")
+
+    return shift_angle(angles)
 
 
 class IKNode(Node):
